@@ -333,21 +333,28 @@ func TestReadExistingAndNewLogs(t *testing.T) {
 func TestStartAtEnd(t *testing.T) {
 	t.Parallel()
 
-	var pollInterval time.Duration
 	operator, logReceived, tempDir := newTestFileOperator(t, func(cfg *Config) {
 		cfg.StartAt = "end"
-		pollInterval = cfg.PollInterval
 	})
 
 	temp := openTemp(t, tempDir)
 	writeString(t, temp, "testlog1\n")
 
-	require.NoError(t, operator.Start(testutil.NewUnscopedMockPersister()))
+	persister := newFirstSavePersister()
+	require.NoError(t, operator.Start(persister))
 	defer func() {
 		require.NoError(t, operator.Stop())
 	}()
 
-	time.Sleep(2 * pollInterval)
+	// Wait until the first poll cycle has saved the starting position at the end
+	// of the existing file. Sleeping for a fixed number of poll intervals is
+	// racy: under scheduling pressure the first poll can run only after testlog2
+	// is written, and start_at=end would then skip that line too.
+	select {
+	case <-persister.saved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the first poll to save offsets")
+	}
 
 	expectNoMessages(t, logReceived)
 

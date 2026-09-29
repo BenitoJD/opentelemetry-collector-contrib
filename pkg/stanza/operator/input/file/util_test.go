@@ -4,13 +4,16 @@
 package file
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/extension/xextension/storage"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/stanza/entry"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/pkg/stanza/operator"
@@ -99,4 +102,33 @@ func expectNoMessagesUntil(t *testing.T, c chan *entry.Entry, d time.Duration) {
 		require.FailNow(t, "Received unexpected message", "Message: %s", e.Body.(string))
 	case <-time.After(d):
 	}
+}
+
+// firstSavePersister wraps a mock persister and signals the first time offsets
+// are saved, which happens at the end of the first poll cycle, after any
+// discovered file has been positioned. Tests should wait for this signal
+// instead of sleeping for a fixed number of poll intervals.
+type firstSavePersister struct {
+	operator.Persister
+	saved chan struct{}
+	once  sync.Once
+}
+
+func newFirstSavePersister() *firstSavePersister {
+	return &firstSavePersister{
+		Persister: testutil.NewUnscopedMockPersister(),
+		saved:     make(chan struct{}),
+	}
+}
+
+func (p *firstSavePersister) Set(ctx context.Context, key string, value []byte) error {
+	err := p.Persister.Set(ctx, key, value)
+	p.once.Do(func() { close(p.saved) })
+	return err
+}
+
+func (p *firstSavePersister) Batch(ctx context.Context, ops ...*storage.Operation) error {
+	err := p.Persister.Batch(ctx, ops...)
+	p.once.Do(func() { close(p.saved) })
+	return err
 }
